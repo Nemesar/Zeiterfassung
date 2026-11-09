@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Stempeluhr</title>
+<meta name="description" content="Arbeitszeit per Klick erfassen: Kommen, Gehen, Kalender, CSV-Export.">
+<meta name="theme-color" content="#17212b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Sometype+Mono:wght@400;500;700&display=swap">
+<style>
+html{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);background:var(--paper)}
+body{margin:0}
+[hidden]{display:none!important}
+/* Layout: one narrow column like a clock-in terminal — punch panel on top, month card below, day sheet slides up from the bottom */
+:root{
+  --paper:#edf0f3;      /* page ground, cool grey with a blue bias */
+  --card:#ffffff;
+  --ink:#17212b;
+  --muted:#5f6c79;
+  --line:#d5dbe2;
+  --signal:#1f5fe0;     /* accent: running clock */
+  --signal-soft:#dfe8fb;
+  --done:#1b7f5a;       /* recorded hours */
+  --done-soft:#dcefe6;
+  --warn:#b4471b;
+  --holiday:#8a5a00;
+  --font-ui:"Figtree", "Segoe UI", system-ui, sans-serif;
+  --font-num:"Sometype Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --paper:#0f141a; --card:#18202a; --ink:#e6ebf0; --muted:#94a1ae; --line:#2a3542;
+    --signal:#6e9bff; --signal-soft:#1c2b4a; --done:#4cc792; --done-soft:#163329;
+    --warn:#ff9466; --holiday:#e0b155;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#0f141a; --card:#18202a; --ink:#e6ebf0; --muted:#94a1ae; --line:#2a3542;
+  --signal:#6e9bff; --signal-soft:#1c2b4a; --done:#4cc792; --done-soft:#163329;
+  --warn:#ff9466; --holiday:#e0b155;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink); font-family:var(--font-ui); font-size:15px; line-height:1.45;
+  padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px));
+  padding-block:16px 40px;
+  -webkit-tap-highlight-color:transparent;
+}
+.app{max-width:480px; margin:0 auto; display:flex; flex-direction:column; gap:16px}
+button{font:inherit; color:inherit; cursor:pointer}
+button:focus-visible, input:focus-visible{outline:2px solid var(--signal); outline-offset:2px}
+.num{font-family:var(--font-num); font-variant-numeric:tabular-nums}
+
+header{display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap}
+header h1{font-size:22px; font-weight:700; letter-spacing:-.01em; margin:0}
+.sync{font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px}
+.sync i{width:7px; height:7px; border-radius:50%; background:var(--muted); display:inline-block}
+.sync.on i{background:var(--done)}
+
+/* Punch panel */
+.punch{background:var(--card); border:1px solid var(--line); border-radius:20px; padding:20px; display:flex; flex-direction:column; align-items:center; gap:14px; text-align:center}
+.punch .date{font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em}
+.punch .state{font-size:14px; color:var(--muted); min-height:1.45em}
+.punch.running .state{color:var(--signal); font-weight:600}
+.clock{font-family:var(--font-num); font-size:clamp(44px, 14vw, 60px); font-weight:500; letter-spacing:-.02em; line-height:1; font-variant-numeric:tabular-nums}
+.punch.running .clock{color:var(--signal)}
+.bigbtn{
+  width:min(220px, 70vw); aspect-ratio:1; max-width:100%; border-radius:50%; border:none;
+  background:var(--ink); color:var(--card); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+  box-shadow:0 0 0 8px var(--paper), 0 0 0 9px var(--line);
+  transition:transform .12s ease, background .2s ease;
+}
+.bigbtn:active{transform:scale(.97)}
+.bigbtn .lbl{font-size:30px; font-weight:700; letter-spacing:.01em}
+.bigbtn .sub{font-size:13px; opacity:.75}
+.punch.running .bigbtn{background:var(--signal); color:#fff; box-shadow:0 0 0 8px var(--signal-soft), 0 0 0 9px var(--signal)}
+@media (prefers-reduced-motion: no-preference){
+  .punch.running .bigbtn{animation:pulse 2.4s ease-in-out infinite}
+  @keyframes pulse{50%{box-shadow:0 0 0 14px var(--signal-soft), 0 0 0 15px var(--signal)}}
+}
+.today{display:flex; gap:24px; justify-content:center; font-size:13px; color:var(--muted)}
+.today b{display:block; font-family:var(--font-num); font-size:18px; color:var(--ink); font-weight:500}
+
+/* Month card */
+.month{background:var(--card); border:1px solid var(--line); border-radius:20px; padding:16px 12px 14px; display:flex; flex-direction:column; gap:12px}
+.mhead{display:flex; align-items:center; justify-content:space-between; gap:8px; padding-inline:4px}
+.mhead h2{font-size:18px; margin:0; font-weight:700; text-wrap:balance}
+.nav{display:flex; gap:6px}
+.nav button{width:38px; height:38px; border-radius:10px; border:1px solid var(--line); background:transparent; font-size:18px; line-height:1}
+.nav button:disabled{opacity:.3; cursor:default}
+.nav .todaybtn{width:auto; padding-inline:12px; font-size:13px; font-weight:600}
+.grid{display:grid; grid-template-columns:30px repeat(7, 1fr); gap:3px}
+.grid .h{font-size:11px; color:var(--muted); text-align:center; text-transform:uppercase; letter-spacing:.06em; padding-bottom:4px}
+.kw{font-family:var(--font-num); font-size:10px; color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; line-height:1.1}
+.kw span{font-size:10px; color:var(--ink); font-variant-numeric:tabular-nums}
+.day{
+  aspect-ratio:1/1.12; border-radius:9px; border:1px solid transparent; background:transparent;
+  display:flex; flex-direction:column; align-items:center; justify-content:flex-start; padding:5px 0 0; gap:2px; min-width:0;
+}
+.day .d{font-size:14px; font-weight:600; font-variant-numeric:tabular-nums}
+.day .hrs{font-family:var(--font-num); font-size:11px; font-variant-numeric:tabular-nums; color:var(--done); font-weight:500}
+.day.we .d{color:var(--muted)}
+.day.hol .d{color:var(--holiday)}
+.day.hol::after{content:"FT"; font-size:9px; letter-spacing:.06em; color:var(--holiday)}
+.day.has{background:var(--done-soft)}
+.day.has.hol::after{content:none}
+.day.live{background:var(--signal-soft)}
+.day.live .hrs{color:var(--signal)}
+.day.today{border-color:var(--ink)}
+.day.blank{visibility:hidden}
+.sum{display:grid; grid-template-columns:repeat(3,1fr); border-top:1px solid var(--line); padding-top:12px}
+.sum div{text-align:center; font-size:12px; color:var(--muted)}
+.sum b{display:block; font-family:var(--font-num); font-size:20px; font-weight:500; color:var(--ink)}
+.legend{font-size:12px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap; padding-inline:4px}
+.legend span::before{content:""; display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:-1px; background:var(--done-soft)}
+.legend .l-live::before{background:var(--signal-soft)}
+.legend .l-hol::before{background:transparent; border:1px solid var(--holiday)}
+.hint{font-size:12px; color:var(--muted); text-align:center}
+.example{font-size:12px; color:var(--warn); text-align:center}
+
+/* Day sheet */
+.scrim{position:fixed; inset:0; background:rgba(10,15,20,.45); z-index:20}
+.sheet{
+  position:fixed; left:0; right:0; bottom:0; z-index:21; background:var(--card); border-radius:20px 20px 0 0;
+  max-height:85%; overflow:auto;
+  padding:18px max(16px, env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.sheet-in{max-width:480px; margin:0 auto; display:flex; flex-direction:column; gap:14px}
+.sheet h3{margin:0; font-size:18px}
+.sheet .meta{font-size:13px; color:var(--muted)}
+.sessions{display:flex; flex-direction:column; border:1px solid var(--line); border-radius:12px}
+.sess{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px}
+.sess + .sess{border-top:1px solid var(--line)}
+.sess .t{font-family:var(--font-num); font-variant-numeric:tabular-nums}
+.sess .dur{font-family:var(--font-num); color:var(--muted); font-size:13px; margin-left:auto}
+.del{border:1px solid var(--line); background:transparent; border-radius:8px; padding:5px 10px; font-size:13px}
+.del.arm{background:var(--warn); border-color:var(--warn); color:#fff}
+.empty{padding:14px 12px; color:var(--muted); font-size:14px}
+.add{display:flex; flex-direction:column; gap:10px}
+.add .row{display:flex; gap:10px; flex-wrap:wrap; align-items:end}
+.add label{display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); flex:1 1 110px}
+.add input{font-family:var(--font-num); font-size:16px; padding:9px 10px; border-radius:10px; border:1px solid var(--line); background:var(--paper); color:var(--ink); width:100%}
+.btn{border:none; border-radius:10px; padding:11px 16px; font-weight:600; background:var(--ink); color:var(--card)}
+.btn.ghost{background:transparent; color:var(--ink); border:1px solid var(--line)}
+.err{color:var(--warn); font-size:13px; min-height:1em}
+.sheet-actions{display:flex; justify-content:flex-end}
+.export{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 16px; border:1px solid var(--line); border-radius:16px}
+.export p{margin:0; font-size:13px; color:var(--muted); flex:1 1 200px}
+.export p b{display:block; color:var(--ink); font-size:15px}
+.export .msg{flex-basis:100%; font-size:13px; color:var(--muted); min-height:0}
+.export .msg:empty{display:none}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <h1>Stempeluhr</h1>
+    <div class="sync" id="sync"><i></i><span>Offline auf diesem Gerät gespeichert</span></div>
+  </header>
+
+  <section class="punch" id="punch" aria-live="polite">
+    <div class="date" id="todayLabel"></div>
+    <div class="clock" id="clock">0:00:00</div>
+    <div class="state" id="state">Noch nicht eingestempelt</div>
+    <button class="bigbtn" id="punchBtn" type="button">
+      <span class="lbl" id="punchLbl">Kommen</span>
+      <span class="sub" id="punchSub">Zeit starten</span>
+    </button>
+    <div class="today">
+      <div>Heute gesamt<b id="todayTotal">0:00 h</b></div>
+      <div>Diese KW<b id="weekTotal">0:00 h</b></div>
+    </div>
+  </section>
+
+  <section class="month">
+    <div class="mhead">
+      <h2 id="mtitle"></h2>
+      <div class="nav">
+        <button id="prev" type="button" aria-label="Vorheriger Monat">‹</button>
+        <button id="gotoToday" class="todaybtn" type="button">Heute</button>
+        <button id="next" type="button" aria-label="Nächster Monat">›</button>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+    <div class="sum">
+      <div>Stunden<b id="mHours">0:00</b></div>
+      <div>Arbeitstage<b id="mDays">0</b></div>
+      <div>Ø pro Tag<b id="mAvg">0:00</b></div>
+    </div>
+    <div class="legend"><span>erfasst</span><span class="l-live">läuft gerade</span><span class="l-hol">FT = bundesweiter Feiertag</span></div>
+    <div class="hint">Tippe auf einen Tag, um Zeiten zu prüfen, zu löschen oder nachzutragen.</div>
+  </section>
+
+  <section class="export" id="exportBox">
+    <p><b>Daten sichern</b>CSV mit jeder Stempelung und Tagessumme, passend für Excel. Mit „Import“ holst du eine gesicherte Datei zurück, z.B. auf einem neuen Handy.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn ghost" id="importBtn" type="button">Import</button>
+      <button class="btn" id="exportBtn" type="button">CSV speichern</button>
+    </div>
+    <input id="importFile" type="file" accept=".csv,text/csv" hidden>
+    <div class="msg" id="exportMsg"></div>
+  </section>
+</div>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="sheet-in">
+    <div>
+      <h3 id="sheetTitle"></h3>
+      <div class="meta" id="sheetMeta"></div>
+    </div>
+    <div class="sessions" id="sessions"></div>
+    <form class="add" id="addForm">
+      <div class="row">
+        <label for="addStart">Kommen<input id="addStart" type="time" required value="08:00"></label>
+        <label for="addEnd">Gehen<input id="addEnd" type="time" required value="16:30"></label>
+        <button class="btn" type="submit">Nachtragen</button>
+      </div>
+      <div class="err" id="addErr"></div>
+    </form>
+    <div class="sheet-actions"><button class="btn ghost" id="closeSheet" type="button">Schließen</button></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  // ---- Calendar range: 24 months from November 2026 ----
+  const FIRST = {y:2026, m:10};           // month index 10 = November
+  const MONTHS = 24;
+  const LAST = (()=>{const d=new Date(FIRST.y, FIRST.m + MONTHS - 1, 1); return {y:d.getFullYear(), m:d.getMonth()};})();
+  const MN = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+  const WD = ["Mo","Di","Mi","Do","Fr","Sa","So"];
+  const WDL = ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"];
+  const LSKEY = "stempeluhr.v1";
+
+  const pad = n => String(n).padStart(2,"0");
+  const keyOf = d => d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+  const fromKey = k => { const [y,m,d]=k.split("-").map(Number); return new Date(y,m-1,d); };
+  const hm = ms => { const t=Math.round(ms/60000); return Math.floor(t/60)+":"+pad(t%60); };
+  const hms = ms => { const t=Math.floor(ms/1000); return Math.floor(t/3600)+":"+pad(Math.floor(t/60)%60)+":"+pad(t%60); };
+  const clockT = ms => { const d=new Date(ms); return pad(d.getHours())+":"+pad(d.getMinutes()); };
+
+  // ---- ISO week & German nationwide holidays ----
+  function isoWeek(d){
+    const t=new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const day=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-day);
+    const y0=new Date(Date.UTC(t.getUTCFullYear(),0,1));
+    return Math.ceil(((t-y0)/86400000+1)/7);
+  }
+  function easter(y){
+    const a=y%19,b=Math.floor(y/100),c=y%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),
+      h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),
+      mo=Math.floor((h+l-7*m+114)/31),da=((h+l-7*m+114)%31)+1;
+    return new Date(y,mo-1,da);
+  }
+  const holCache={};
+  function holidays(y){
+    if(holCache[y]) return holCache[y];
+    const e=easter(y), off=n=>{const d=new Date(e); d.setDate(d.getDate()+n); return keyOf(d);};
+    const h={};
+    h[y+"-01-01"]="Neujahr"; h[off(-2)]="Karfreitag"; h[off(1)]="Ostermontag"; h[y+"-05-01"]="Tag der Arbeit";
+    h[off(39)]="Christi Himmelfahrt"; h[off(50)]="Pfingstmontag"; h[y+"-10-03"]="Tag der Deutschen Einheit";
+    h[y+"-12-25"]="1. Weihnachtstag"; h[y+"-12-26"]="2. Weihnachtstag";
+    return holCache[y]=h;
+  }
+  const holidayOf = d => holidays(d.getFullYear())[keyOf(d)];
+
+  // ---- State ----
+  // { running: startMs|null, days: { "YYYY-MM-DD": [[startMs,endMs],...] }, updated: ms }
+  let state = {running:null, days:{}, updated:0};
+  try { const raw=localStorage.getItem(LSKEY); if(raw){ const s=JSON.parse(raw); if(s && typeof s==="object" && s.days) state=s; } } catch(e){}
+
+  let docRef=null, writing=false, pendingWrite=false;
+  function persist(){
+    state.updated=Date.now();
+    try { localStorage.setItem(LSKEY, JSON.stringify(state)); } catch(e){}
+    pushRemote();
+  }
+  async function pushRemote(){
+    if(!docRef) return;
+    if(writing){ pendingWrite=true; return; }
+    writing=true;
+    try { await docRef.set(JSON.parse(JSON.stringify(state))); setSync(true); }
+    catch(e){
+      if(e && e.code==="unavailable"){ setTimeout(()=>{writing=false; pushRemote();}, 800+Math.random()*1200); return; }
+      setSync(false, "Konto-Speichern fehlgeschlagen, lokal gesichert");
+    }
+    writing=false;
+    if(pendingWrite){ pendingWrite=false; pushRemote(); }
+  }
+  function setSync(on, text){
+    const el=document.getElementById("sync");
+    el.classList.toggle("on", !!on);
+    el.querySelector("span").textContent = text || "Offline auf diesem Gerät gespeichert";
+  }
+
+  const dayMs = k => (state.days[k]||[]).reduce((s,[a,b])=>s+(b-a),0);
+  const liveMs = k => (state.running && keyOf(new Date(state.running))===k) ? Date.now()-state.running : 0;
+  const totalMs = k => dayMs(k)+liveMs(k);
+
+  // ---- Punch ----
+  const punchBtn=document.getElementById("punchBtn");
+  punchBtn.addEventListener("click", ()=>{
+    const now=Date.now();
+    if(state.running){
+      const s=state.running; state.running=null;
+      if(now-s>=1000){ const k=keyOf(new Date(s)); (state.days[k] ||= []).push([s,now]); state.days[k].sort((a,b)=>a[0]-b[0]); }
+    } else {
+      state.running=now;
+    }
+    persist(); renderAll();
+  });
+
+  function renderPunch(){
+    const now=new Date(), k=keyOf(now);
+    document.getElementById("todayLabel").textContent = WDL[now.getDay()]+", "+now.getDate()+". "+MN[now.getMonth()]+" "+now.getFullYear()+" · KW "+isoWeek(now);
+    const p=document.getElementById("punch"), run=!!state.running;
+    p.classList.toggle("running", run);
+    document.getElementById("punchLbl").textContent = run ? "Gehen" : "Kommen";
+    document.getElementById("punchSub").textContent = run ? "Zeit stoppen" : "Zeit starten";
+    document.getElementById("clock").textContent = hms(run ? Date.now()-state.running : dayMs(k));
+    document.getElementById("state").textContent = run
+      ? "Eingestempelt seit "+clockT(state.running)+" Uhr"
+      : (dayMs(k) ? "Ausgestempelt · heute erfasst" : "Noch nicht eingestempelt");
+    document.getElementById("todayTotal").textContent = hm(totalMs(k))+" h";
+    // ISO week total (Mon–Sun)
+    const mon=new Date(now); mon.setDate(now.getDate()-((now.getDay()+6)%7));
+    let w=0; for(let i=0;i<7;i++){ const d=new Date(mon); d.setDate(mon.getDate()+i); w+=totalMs(keyOf(d)); }
+    document.getElementById("weekTotal").textContent = hm(w)+" h";
+  }
+
+  // ---- Month grid ----
+  const today=new Date();
+  let view = clampView({y:today.getFullYear(), m:today.getMonth()});
+  function clampView(v){
+    const n=v.y*12+v.m, lo=FIRST.y*12+FIRST.m, hi=LAST.y*12+LAST.m;
+    const c=Math.min(hi, Math.max(lo, n)); return {y:Math.floor(c/12), m:c%12};
+  }
+  function renderMonth(){
+    const {y,m}=view;
+    document.getElementById("mtitle").textContent = MN[m]+" "+y;
+    const idx=y*12+m;
+    document.getElementById("prev").disabled = idx<=FIRST.y*12+FIRST.m;
+    document.getElementById("next").disabled = idx>=LAST.y*12+LAST.m;
+    const g=document.getElementById("grid"); g.textContent="";
+    const add=(cls,txt)=>{const e=document.createElement("div"); e.className=cls; if(txt!=null) e.textContent=txt; g.appendChild(e); return e;};
+    add("h","KW"); WD.forEach(w=>add("h",w));
+    const first=new Date(y,m,1), lead=(first.getDay()+6)%7, days=new Date(y,m+1,0).getDate();
+    const tk=keyOf(new Date());
+    let mTot=0, mDays=0;
+    const cells=Math.ceil((lead+days)/7)*7;
+    for(let i=0;i<cells;i++){
+      if(i%7===0){
+        const ref=new Date(y,m,1-lead+i);
+        let wk=0; for(let j=0;j<7;j++){ const d=new Date(ref); d.setDate(ref.getDate()+j); wk+=totalMs(keyOf(d)); }
+        const kw=add("kw"); kw.append("KW "+isoWeek(ref));
+        if(wk){ const s=document.createElement("span"); s.textContent=hm(wk); kw.appendChild(s); }
+      }
+      const dn=i-lead+1;
+      if(dn<1||dn>days){ add("day blank"); continue; }
+      const d=new Date(y,m,dn), k=keyOf(d), t=totalMs(k), hol=holidayOf(d), wd=d.getDay();
+      const b=document.createElement("button"); b.type="button"; b.className="day";
+      if(wd===0||wd===6) b.classList.add("we");
+      if(hol) b.classList.add("hol");
+      if(t) b.classList.add("has");
+      if(liveMs(k)) b.classList.add("live");
+      if(k===tk) b.classList.add("today");
+      const dd=document.createElement("span"); dd.className="d"; dd.textContent=dn; b.appendChild(dd);
+      if(t){ const h=document.createElement("span"); h.className="hrs"; h.textContent=hm(t); b.appendChild(h); mTot+=t; mDays++; }
+      b.setAttribute("aria-label", dn+". "+MN[m]+(hol?" ("+hol+")":"")+(t?", "+hm(t)+" Stunden":""));
+      b.addEventListener("click", ()=>openSheet(k));
+      g.appendChild(b);
+    }
+    document.getElementById("mHours").textContent = hm(mTot);
+    document.getElementById("mDays").textContent = mDays;
+    document.getElementById("mAvg").textContent = mDays ? hm(mTot/mDays) : "0:00";
+  }
+  document.getElementById("prev").addEventListener("click", ()=>{ view=clampView(normalize({y:view.y, m:view.m-1})); renderMonth(); });
+  document.getElementById("next").addEventListener("click", ()=>{ view=clampView(normalize({y:view.y, m:view.m+1})); renderMonth(); });
+  document.getElementById("gotoToday").addEventListener("click", ()=>{ const n=new Date(); view=clampView({y:n.getFullYear(), m:n.getMonth()}); renderMonth(); });
+  function normalize(v){ const d=new Date(v.y, v.m, 1); return {y:d.getFullYear(), m:d.getMonth()}; }
+
+  // swipe between months
+  (function(){
+    let x0=null, y0=null; const el=document.getElementById("grid");
+    el.addEventListener("touchstart", e=>{ x0=e.touches[0].clientX; y0=e.touches[0].clientY; }, {passive:true});
+    el.addEventListener("touchend", e=>{
+      if(x0==null) return; const dx=e.changedTouches[0].clientX-x0, dy=e.changedTouches[0].clientY-y0; x0=null;
+      if(Math.abs(dx)>50 && Math.abs(dx)>Math.abs(dy)*1.5){ view=clampView(normalize({y:view.y, m:view.m+(dx<0?1:-1)})); renderMonth(); }
+    });
+  })();
+
+  // ---- Day sheet ----
+  let sheetKey=null, armed=-1;
+  const sheet=document.getElementById("sheet"), scrim=document.getElementById("scrim");
+  function openSheet(k){ sheetKey=k; armed=-1; document.getElementById("addErr").textContent=""; renderSheet(); sheet.hidden=false; scrim.hidden=false; }
+  function closeSheet(){ sheet.hidden=true; scrim.hidden=true; sheetKey=null; }
+  scrim.addEventListener("click", closeSheet);
+  document.getElementById("closeSheet").addEventListener("click", closeSheet);
+  document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !sheet.hidden) closeSheet(); });
+  function renderSheet(){
+    if(!sheetKey) return;
+    const d=fromKey(sheetKey), hol=holidayOf(d);
+    document.getElementById("sheetTitle").textContent = WDL[d.getDay()]+", "+d.getDate()+". "+MN[d.getMonth()]+" "+d.getFullYear();
+    document.getElementById("sheetMeta").textContent = "KW "+isoWeek(d)+(hol?" · "+hol:"")+" · gesamt "+hm(totalMs(sheetKey))+" h";
+    const box=document.getElementById("sessions"); box.textContent="";
+    const list=state.days[sheetKey]||[];
+    list.forEach(([a,b],i)=>{
+      const r=document.createElement("div"); r.className="sess";
+      const t=document.createElement("span"); t.className="t"; t.textContent=clockT(a)+" – "+clockT(b);
+      const du=document.createElement("span"); du.className="dur"; du.textContent=hm(b-a)+" h";
+      const del=document.createElement("button"); del.type="button"; del.className="del"+(armed===i?" arm":"");
+      del.textContent = armed===i ? "Wirklich löschen" : "Löschen";
+      del.addEventListener("click", ()=>{
+        if(armed!==i){ armed=i; renderSheet(); return; }
+        list.splice(i,1); if(!list.length) delete state.days[sheetKey];
+        armed=-1; persist(); renderAll();
+      });
+      r.append(t,du,del); box.appendChild(r);
+    });
+    if(liveMs(sheetKey)){
+      const r=document.createElement("div"); r.className="sess";
+      r.innerHTML='<span class="t"></span><span class="dur"></span>';
+      r.querySelector(".t").textContent=clockT(state.running)+" – läuft";
+      r.querySelector(".dur").textContent=hm(liveMs(sheetKey))+" h";
+      box.appendChild(r);
+    }
+    if(!box.children.length){ const e=document.createElement("div"); e.className="empty"; e.textContent="Für diesen Tag ist noch keine Zeit erfasst."; box.appendChild(e); }
+  }
+  document.getElementById("addForm").addEventListener("submit", e=>{
+    e.preventDefault();
+    const err=document.getElementById("addErr");
+    const s=document.getElementById("addStart").value, en=document.getElementById("addEnd").value;
+    if(!s||!en){ err.textContent="Bitte Kommen- und Gehen-Zeit eintragen."; return; }
+    const d=fromKey(sheetKey);
+    const [sh,sm]=s.split(":").map(Number), [eh,em]=en.split(":").map(Number);
+    const a=new Date(d.getFullYear(),d.getMonth(),d.getDate(),sh,sm).getTime();
+    const b=new Date(d.getFullYear(),d.getMonth(),d.getDate(),eh,em).getTime();
+    if(b<=a){ err.textContent="Gehen muss nach Kommen liegen."; return; }
+    const list=state.days[sheetKey]||[];
+    if(list.some(([x,y])=>a<y && b>x)){ err.textContent="Diese Zeit überschneidet sich mit einem vorhandenen Eintrag."; return; }
+    err.textContent="";
+    list.push([a,b]); list.sort((p,q)=>p[0]-q[0]); state.days[sheetKey]=list;
+    persist(); renderAll();
+  });
+
+  function renderAll(){ renderPunch(); renderMonth(); if(!sheet.hidden) renderSheet(); }
+
+  // ---- Tick ----
+  let lastMin=-1;
+  setInterval(()=>{
+    renderPunch();
+    const m=Math.floor(Date.now()/60000);
+    if(m!==lastMin){ lastMin=m; if(state.running){ renderMonth(); if(!sheet.hidden) renderSheet(); } }
+  }, 1000);
+  renderAll();
+
+  // ---- CSV export (German Excel: semicolon, decimal comma, UTF-8 BOM) ----
+  function buildCsv(){
+    const q=v=>{ v=String(v); return /[;"\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
+    const dec=ms=>(ms/3600000).toFixed(2).replace(".",",");
+    const rows=[["Datum","Wochentag","KW","Feiertag","Kommen","Gehen","Dauer (h:mm)","Dauer (Std. dezimal)","Tagessumme (h:mm)","Tagessumme (Std. dezimal)"]];
+    Object.keys(state.days).sort().forEach(k=>{
+      const d=fromKey(k), list=state.days[k], tot=dayMs(k);
+      const ds=pad(d.getDate())+"."+pad(d.getMonth()+1)+"."+d.getFullYear();
+      list.forEach(([a,b],i)=>{
+        const last=i===list.length-1;
+        rows.push([ds, WDL[d.getDay()], isoWeek(d), holidayOf(d)||"", clockT(a), clockT(b), hm(b-a), dec(b-a), last?hm(tot):"", last?dec(tot):""]);
+      });
+    });
+    return "﻿"+rows.map(r=>r.map(q).join(";")).join("\r\n")+"\r\n";
+  }
+  const msg=document.getElementById("exportMsg");
+  document.getElementById("exportBtn").addEventListener("click", ()=>{
+    if(!Object.keys(state.days).length){ msg.textContent="Noch keine Zeiten erfasst. Stempel zuerst einmal ein und aus."; return; }
+    const blob=new Blob([buildCsv()],{type:"text/csv;charset=utf-8"});
+    const url=URL.createObjectURL(blob), link=document.createElement("a");
+    link.href=url; link.download="arbeitszeiten-"+keyOf(new Date())+".csv";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    msg.textContent="CSV wurde gespeichert (Ordner „Downloads“).";
+  });
+
+  // ---- CSV import (reads the file this app exports) ----
+  const fileIn=document.getElementById("importFile");
+  document.getElementById("importBtn").addEventListener("click", ()=>fileIn.click());
+  fileIn.addEventListener("change", async ()=>{
+    const f=fileIn.files[0]; fileIn.value="";
+    if(!f) return;
+    const text=(await f.text()).replace(/^﻿/,"");
+    const lines=text.split(/\r?\n/).filter(l=>l.trim());
+    let added=0, dup=0, bad=0;
+    for(const line of lines){
+      const c=line.split(";").map(s=>s.replace(/^"|"$/g,"").trim());
+      const dm=/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(c[0]||""), km=/^(\d{1,2}):(\d{2})$/.exec(c[4]||""), gm=/^(\d{1,2}):(\d{2})$/.exec(c[5]||"");
+      if(!dm){ continue; }                       // header or empty
+      if(!km||!gm){ bad++; continue; }
+      const y=+dm[3], mo=+dm[2]-1, d=+dm[1];
+      const s=new Date(y,mo,d,+km[1],+km[2]).getTime();
+      let e=new Date(y,mo,d,+gm[1],+gm[2]).getTime();
+      if(e<=s) e+=86400000;                      // over midnight
+      const k=keyOf(new Date(y,mo,d)), list=(state.days[k] ||= []);
+      if(list.some(([x,z])=>s<z && e>x)){ dup++; continue; }
+      list.push([s,e]); list.sort((p,q)=>p[0]-q[0]); added++;
+    }
+    if(added){ persist(); renderAll(); }
+    msg.textContent = added||dup
+      ? added+" Einträge importiert"+(dup?", "+dup+" waren schon vorhanden":"")+(bad?", "+bad+" Zeilen nicht lesbar":"")+"."
+      : "In dieser Datei wurden keine Stempelungen gefunden. Erwartet wird eine CSV aus der Stempeluhr.";
+  });
+
+  // ---- Offline: service worker ----
+  if("serviceWorker" in navigator){
+    window.addEventListener("load", ()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+  }
+})();
+</script>
+</body>
+</html>
